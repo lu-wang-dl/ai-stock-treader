@@ -1,10 +1,10 @@
+import os
 import openai
 import json
 from typing import Dict, List, Any, Optional
 
-# DeepSeek API配置
-DATABRICKS_API_KEY = DATABRICKS_TOKEN # os.getenv("DEEPSEEK_API_KEY", "")
-DATABRICKS_BASE_URL = base_url # os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+DATABRICKS_API_KEY = os.getenv("DATABRICKS_TOKEN", "")
+DATABRICKS_BASE_URL = os.getenv("DATABRICKS_BASE_URL", "")
 
 
 class DatabricksClient:
