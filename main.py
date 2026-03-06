@@ -8,13 +8,7 @@ import pandas as pd
 from datetime import datetime
 import time
 import os
-from us_stock_trading import USStockTradingInterface, USStockTradingSimulator
 from config_manager import config_manager
-from alpaca_ai_decision import AlpacaAIDecision
-from alpaca_strategy_manager import AlpacaStrategyManager
-from alpaca_auto_trader import get_auto_trader
-from yfinance_stock_advisor import YFinanceStockAdvisor
-from stock_picker_agent import StockPickerAgent
 
 # Page configuration
 st.set_page_config(
@@ -168,13 +162,14 @@ st.markdown("""
 def get_trading_interface():
     """Get or initialize trading interface"""
     if 'trading_interface' not in st.session_state:
+        from us_stock_trading import USStockTradingInterface, USStockTradingSimulator
         # Read config
         config = config_manager.read_env()
         alpaca_enabled = config.get('ALPACA_ENABLED', 'false').lower() == 'true'
         alpaca_api_key = config.get('ALPACA_API_KEY', '')
         alpaca_api_secret = config.get('ALPACA_API_SECRET', '')
         alpaca_paper = config.get('ALPACA_PAPER', 'true').lower() == 'true'
-        
+
         if alpaca_enabled and alpaca_api_key and alpaca_api_secret:
             st.session_state.trading_interface = USStockTradingInterface(
                 api_key=alpaca_api_key,
@@ -244,6 +239,7 @@ def display_account_info():
     
     with status_col3:
         # Detect trading mode
+        from us_stock_trading import USStockTradingSimulator
         trading = get_trading_interface()
         is_simulator = isinstance(trading, USStockTradingSimulator)
         
@@ -454,6 +450,7 @@ def display_trading_panel():
                             account_info = trading.get_account_info()
                             
                             # Initialize AI decision engine
+                            from alpaca_ai_decision import AlpacaAIDecision
                             ai_engine = AlpacaAIDecision(
                                 api_key=deepseek_api_key,
                                 base_url=config.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1')
@@ -659,6 +656,7 @@ def display_ai_decision():
                     return
                 
                 # Initialize AI decision engine
+                from alpaca_ai_decision import AlpacaAIDecision
                 ai_engine = AlpacaAIDecision()
                 
                 # Get AI decision
@@ -881,6 +879,7 @@ def display_strategies():
     st.markdown("Manage trading strategies and automatic trading")
     
     trading = get_trading_interface()
+    from alpaca_strategy_manager import AlpacaStrategyManager
     strategy_manager = AlpacaStrategyManager(trading)
     strategy_manager.set_trading_interface(trading)
     
@@ -1052,6 +1051,7 @@ def display_strategies():
         st.markdown("### 🤖 AI Auto Trading")
         
         # Auto trader status
+        from alpaca_auto_trader import get_auto_trader
         auto_trader = get_auto_trader(trading)
         
         col1, col2 = st.columns(2)
@@ -1262,6 +1262,7 @@ def display_stock_advisor():
     # Initialize advisor
     @st.cache_resource
     def get_advisor():
+        from yfinance_stock_advisor import YFinanceStockAdvisor
         return YFinanceStockAdvisor(use_ai=False)
     
     advisor = get_advisor()
@@ -1397,6 +1398,7 @@ def display_stock_advisor():
 
             if st.button("🤖 Pick Stocks", type="primary", key="picker_run_sector"):
                 with st.spinner(f"AI is selecting top {num_stocks} stocks..."):
+                    from stock_picker_agent import StockPickerAgent
                     picker = StockPickerAgent()
                     result = picker.pick_stocks(
                         num_stocks=int(num_stocks),
@@ -1417,6 +1419,7 @@ def display_stock_advisor():
                     symbols = [s.strip().upper() for s in picker_symbols_input.replace(',', ' ').split() if s.strip()]
                     if symbols:
                         with st.spinner(f"AI is selecting top {num_stocks} stocks from {len(symbols)} candidates..."):
+                            from stock_picker_agent import StockPickerAgent
                             picker = StockPickerAgent()
                             result = picker.pick_stocks(
                                 num_stocks=int(num_stocks),
@@ -1661,6 +1664,7 @@ def main():
         account_info = trading.get_account_info()
         if account_info.get('success'):
             # Check if using simulator or Alpaca
+            from us_stock_trading import USStockTradingSimulator
             is_simulator = isinstance(trading, USStockTradingSimulator)
             
             if is_simulator:
