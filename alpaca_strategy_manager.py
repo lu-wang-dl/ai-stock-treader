@@ -32,20 +32,10 @@ class AlpacaStrategyManager:
         self.db_path = "alpaca_strategies.db"
         self._init_database()
         
-        # Initialize AI decision engine (if DeepSeek is configured)
+        # Initialize AI decision engine
         config = config_manager.read_env()
-        deepseek_api_key = config.get('DEEPSEEK_API_KEY', '')
-        self.ai_engine = None
-        if deepseek_api_key:
-            try:
-                self.ai_engine = AlpacaAIDecision(
-                    api_key=deepseek_api_key,
-                    base_url=config.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1')
-                )
-                self.logger.info("AI decision engine initialized")
-            except Exception as e:
-                self.logger.warning(f"AI decision engine initialization failed: {e}")
-        
+
+        self.ai_engine = AlpacaAIDecision()
         # Initialize hard risk control firewall
         firewall_config = {
             'enable_extended_hours': config.get('ENABLE_EXTENDED_HOURS', 'false').lower() == 'true',
@@ -246,6 +236,75 @@ class AlpacaStrategyManager:
             self.logger.error(f"Failed to get strategy tasks: {e}")
             return []
     
+    def add_strategy_tasks_batch(self, strategy_name: str, symbols: List[str], config: Dict = None) -> Tuple[bool, str]:
+        """
+        Add strategy tasks for multiple symbols at once.
+
+        Args:
+            strategy_name: Strategy name
+            symbols: List of stock symbols
+            config: Strategy configuration
+
+        Returns:
+            (success, message)
+        """
+        added = []
+        skipped = []
+        for sym in symbols:
+            sym = sym.strip().upper()
+            if not sym:
+                continue
+            ok, msg = self.add_strategy_task(strategy_name, sym, config)
+            if ok:
+                added.append(sym)
+            else:
+                skipped.append(sym)
+
+        if not added and not skipped:
+            return False, "No valid symbols provided"
+
+        parts = []
+        if added:
+            parts.append(f"Added {len(added)}: {', '.join(added)}")
+        if skipped:
+            parts.append(f"Skipped {len(skipped)} (already exist): {', '.join(skipped)}")
+        return bool(added), "; ".join(parts)
+
+    def add_strategy_tasks_from_picker(self, num_stocks: int = 5,
+                                       sectors: Optional[List[str]] = None,
+                                       custom_symbols: Optional[List[str]] = None,
+                                       min_buy_signals: int = 2,
+                                       config: Dict = None) -> Tuple[bool, str, Dict]:
+        """
+        Use AI Stock Picker agent to select stocks and add them as strategy tasks.
+
+        Args:
+            num_stocks: Number of stocks for the picker to select.
+            sectors: Sectors to source candidates from.
+            custom_symbols: Explicit candidate list.
+            min_buy_signals: Minimum technical buy signals for pre-filtering.
+            config: Strategy configuration for each task.
+
+        Returns:
+            (success, message, picker_result)
+        """
+        from stock_picker_agent import StockPickerAgent
+        picker = StockPickerAgent()
+        result = picker.pick_stocks(
+            num_stocks=num_stocks,
+            sectors=sectors,
+            custom_symbols=custom_symbols,
+            min_buy_signals=min_buy_signals,
+        )
+
+        picks = result.get("picks", [])
+        if not picks:
+            return False, "AI Stock Picker found no stocks to add.", result
+
+        symbols = [p["symbol"] for p in picks]
+        ok, msg = self.add_strategy_tasks_batch("ai_decision", symbols, config)
+        return ok, msg, result
+
     # ==================== AI Decision Strategy ====================
     
     def execute_ai_strategy_v2(self, symbol: str, auto_trade: bool = False) -> Dict:
@@ -259,12 +318,6 @@ class AlpacaStrategyManager:
         Returns:
             Strategy execution result
         """
-        if not self.ai_engine:
-            return {
-                'success': False,
-                'error': 'AI decision engine not initialized, please configure DeepSeek API Key'
-            }
-        
         if not self.trading:
             return {
                 'success': False,
@@ -300,7 +353,8 @@ class AlpacaStrategyManager:
             )
             
             # 4. Call LLM to get decision recommendation
-            llm_result = self.ai_engine.analyze_and_decide_v2(snapshot)
+            # llm_result = self.ai_engine.analyze_and_decide_v2(snapshot)
+            llm_result = self.ai_engine.analyze_and_decide_databricks_client(snapshot)
             if not llm_result.get('success'):
                 return {
                     'success': False,

@@ -1,0 +1,2 @@
+- Cannot sell the stock on the same day buying it
+- If lossing money for one stock, cannot buy the same stock in 30 days

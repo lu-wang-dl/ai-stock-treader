@@ -48,7 +48,7 @@ def main():
         return
     
     # 检查配置
-    config_ok = check_config()
+    # config_ok = check_config()
     
     # 启动Streamlit应用
     print("🌐 正在启动Web界面...")

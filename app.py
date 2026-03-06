@@ -13,6 +13,8 @@ from config_manager import config_manager
 from alpaca_ai_decision import AlpacaAIDecision
 from alpaca_strategy_manager import AlpacaStrategyManager
 from alpaca_auto_trader import get_auto_trader
+from yfinance_stock_advisor import YFinanceStockAdvisor
+from stock_picker_agent import StockPickerAgent
 
 # Page configuration
 st.set_page_config(
@@ -607,16 +609,7 @@ def display_trading_panel():
 def display_ai_decision():
     """Display AI Decision page"""
     st.header("🤖 AI Trading Decision")
-    st.markdown("Use DeepSeek AI to analyze stocks and get autonomous trading recommendations")
-    
-    # Check if DeepSeek is configured
-    config = config_manager.read_env()
-    deepseek_api_key = config.get('DEEPSEEK_API_KEY', '')
-    
-    if not deepseek_api_key:
-        st.warning("⚠️ DeepSeek API Key not configured. Please configure it in the Configuration page.")
-        st.info("💡 Go to ⚙️ Configuration → 🤖 LLM Configuration (DeepSeek) to set up your API key")
-        return
+    st.markdown("Use AI to analyze stocks and get autonomous trading recommendations")
     
     trading = get_trading_interface()
     
@@ -666,10 +659,7 @@ def display_ai_decision():
                     return
                 
                 # Initialize AI decision engine
-                ai_engine = AlpacaAIDecision(
-                    api_key=deepseek_api_key,
-                    base_url=config.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1')
-                )
+                ai_engine = AlpacaAIDecision()
                 
                 # Get AI decision
                 result = ai_engine.analyze_and_decide(
@@ -908,37 +898,123 @@ def display_strategies():
         
         # Add new strategy task
         with st.expander("➕ Add New Strategy Task", expanded=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                strategy_name = st.selectbox(
-                    "Strategy Type",
-                    ["ai_decision", "low_price_bull", "custom"],
-                    key="new_strategy_type"
-                )
-                symbol = st.text_input("Stock Symbol", placeholder="AAPL", key="new_strategy_symbol").upper()
-            
-            with col2:
-                auto_trade = st.checkbox("Enable Auto Trading", key="new_auto_trade")
-                check_interval = st.number_input("Check Interval (minutes)", min_value=1, value=5, key="new_check_interval")
-            
-            if st.button("Add Strategy Task", type="primary", key="add_strategy_task"):
-                if not symbol:
-                    st.error("Please enter a stock symbol")
-                else:
-                    config = {
-                        'auto_trade': auto_trade,
-                        'check_interval': check_interval
-                    }
-                    success, message = strategy_manager.add_strategy_task(
-                        strategy_name=strategy_name,
-                        symbol=symbol,
-                        config=config
+            add_method = st.radio(
+                "How to add stocks?",
+                ["Manual Entry", "AI Stock Picker"],
+                horizontal=True,
+                key="add_task_method"
+            )
+
+            if add_method == "Manual Entry":
+                col1, col2 = st.columns(2)
+                with col1:
+                    strategy_name = st.selectbox(
+                        "Strategy Type",
+                        ["ai_decision", "low_price_bull", "custom"],
+                        key="new_strategy_type"
                     )
-                    if success:
-                        st.success(f"✅ {message}")
-                        st.rerun()
+                    symbols_input = st.text_input(
+                        "Stock Symbols (comma separated for multiple)",
+                        placeholder="AAPL, MSFT, NVDA",
+                        key="new_strategy_symbols"
+                    )
+
+                with col2:
+                    auto_trade = st.checkbox("Enable Auto Trading", key="new_auto_trade")
+                    check_interval = st.number_input("Check Interval (minutes)", min_value=1, value=5, key="new_check_interval")
+
+                if st.button("Add Strategy Task", type="primary", key="add_strategy_task"):
+                    symbols = [s.strip().upper() for s in symbols_input.replace(',', ' ').split() if s.strip()]
+                    if not symbols:
+                        st.error("Please enter at least one stock symbol")
                     else:
-                        st.error(f"❌ {message}")
+                        config = {
+                            'auto_trade': auto_trade,
+                            'check_interval': check_interval
+                        }
+                        if len(symbols) == 1:
+                            success, message = strategy_manager.add_strategy_task(
+                                strategy_name=strategy_name,
+                                symbol=symbols[0],
+                                config=config
+                            )
+                        else:
+                            success, message = strategy_manager.add_strategy_tasks_batch(
+                                strategy_name=strategy_name,
+                                symbols=symbols,
+                                config=config
+                            )
+                        if success:
+                            st.success(f"✅ {message}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
+
+            else:  # AI Stock Picker
+                col1, col2 = st.columns(2)
+                with col1:
+                    picker_num = st.number_input("Number of stocks to pick", min_value=1, max_value=20, value=5, key="task_picker_num")
+                    picker_min_signals = st.slider("Minimum Buy Signals", 1, 6, 2, key="task_picker_signals")
+                with col2:
+                    task_auto_trade = st.checkbox("Enable Auto Trading", key="task_picker_auto_trade")
+                    task_check_interval = st.number_input("Check Interval (minutes)", min_value=1, value=5, key="task_picker_interval")
+
+                picker_source = st.radio("Candidate Source", ["By Sector", "Custom List"], horizontal=True, key="task_picker_source")
+
+                if picker_source == "By Sector":
+                    picker_sectors = st.multiselect(
+                        "Select Sectors (empty = all)",
+                        ['technology', 'healthcare', 'financial-services', 'consumer-cyclical',
+                         'communication-services', 'industrials', 'consumer-defensive',
+                         'energy', 'basic-materials', 'real-estate', 'utilities'],
+                        key="task_picker_sectors"
+                    )
+                    picker_custom = None
+                else:
+                    picker_custom_input = st.text_input(
+                        "Candidate Symbols (comma separated)",
+                        placeholder="AAPL, MSFT, GOOGL, NVDA, META, AMZN, TSLA",
+                        key="task_picker_custom"
+                    )
+                    picker_custom = [s.strip().upper() for s in picker_custom_input.replace(',', ' ').split() if s.strip()] if picker_custom_input else None
+                    picker_sectors = None
+
+                if st.button("🤖 Pick & Add Strategy Tasks", type="primary", key="task_picker_run"):
+                    with st.spinner(f"AI is picking top {picker_num} stocks and adding tasks..."):
+                        task_config = {
+                            'auto_trade': task_auto_trade,
+                            'check_interval': task_check_interval
+                        }
+                        success, message, picker_result = strategy_manager.add_strategy_tasks_from_picker(
+                            num_stocks=int(picker_num),
+                            sectors=picker_sectors if picker_sectors else None,
+                            custom_symbols=picker_custom,
+                            min_buy_signals=picker_min_signals,
+                            config=task_config
+                        )
+                        if success:
+                            st.success(f"✅ {message}")
+                            # Show picker details
+                            picks = picker_result.get("picks", [])
+                            if picks:
+                                df_data = []
+                                for p in picks:
+                                    df_data.append({
+                                        'Rank': p.get('rank', '-'),
+                                        'Symbol': p['symbol'],
+                                        'Name': p['name'][:25] + '...' if len(p['name']) > 25 else p['name'],
+                                        'Price': f"${p['current_price']:.2f}",
+                                        'Score': p.get('score', '-'),
+                                        'Buy Signals': f"{p['buy_signal_count']}/6",
+                                    })
+                                st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
+                            reasoning = picker_result.get("reasoning", "")
+                            if reasoning:
+                                with st.expander("AI Selection Rationale"):
+                                    st.markdown(reasoning)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
         
         # Display active tasks
         st.markdown("### Active Strategy Tasks")
@@ -999,46 +1075,57 @@ def display_strategies():
         
         st.markdown("---")
         st.markdown("### Manual AI Strategy Execution")
-        
+
         col1, col2 = st.columns([3, 1])
         with col1:
-            symbol = st.text_input("Stock Symbol", placeholder="AAPL", key="manual_ai_symbol").upper()
+            symbols_input_manual = st.text_input(
+                "Stock Symbols (comma separated for multiple)",
+                placeholder="AAPL, MSFT, NVDA",
+                key="manual_ai_symbol"
+            )
         with col2:
             auto_execute = st.checkbox("Auto Execute", key="manual_ai_auto")
-        
+
         if st.button("🤖 Execute AI Strategy", type="primary", key="execute_ai_strategy"):
-            if not symbol:
-                st.error("Please enter a stock symbol")
+            symbols_list = [s.strip().upper() for s in symbols_input_manual.replace(',', ' ').split() if s.strip()]
+            if not symbols_list:
+                st.error("Please enter at least one stock symbol")
             else:
-                with st.spinner("Executing AI strategy..."):
-                    result = strategy_manager.execute_ai_strategy(
-                        symbol=symbol,
-                        auto_trade=auto_execute
-                    )
-                    
-                    if result.get('success'):
-                        decision = result.get('decision', {})
-                        st.success(f"✅ AI Strategy executed successfully")
-                        
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Action", decision.get('action', 'N/A'))
-                        with col2:
-                            st.metric("Confidence", f"{decision.get('confidence', 0)}%")
-                        with col3:
-                            st.metric("Risk Level", decision.get('risk_level', 'N/A').upper())
-                        
-                        st.markdown("**Reasoning:**")
-                        st.write(decision.get('reasoning', 'No reasoning provided'))
-                        
-                        if auto_execute and result.get('execution_result'):
-                            exec_result = result.get('execution_result')
-                            if exec_result.get('success'):
-                                st.success(f"✅ Trade executed: {exec_result.get('action')}")
-                            else:
-                                st.error(f"❌ Trade execution failed: {exec_result.get('error')}")
-                    else:
-                        st.error(f"❌ AI Strategy failed: {result.get('error')}")
+                for sym_idx, symbol in enumerate(symbols_list):
+                    with st.spinner(f"Executing AI strategy for {symbol} ({sym_idx+1}/{len(symbols_list)})..."):
+                        result = strategy_manager.execute_ai_strategy(
+                            symbol=symbol,
+                            auto_trade=auto_execute
+                        )
+
+                        st.markdown(f"#### {symbol}")
+                        if result.get('success'):
+                            decision = result.get('decision', {})
+                            st.success(f"AI Strategy executed successfully for {symbol}")
+
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Action", decision.get('action', 'N/A'))
+                            with col2:
+                                st.metric("Confidence", f"{decision.get('confidence', 0)}%")
+                            with col3:
+                                risk_val = decision.get('risk_level', 'N/A')
+                                st.metric("Risk Level", risk_val.upper() if isinstance(risk_val, str) else 'N/A')
+
+                            with st.expander(f"Reasoning for {symbol}"):
+                                st.write(decision.get('reasoning', 'No reasoning provided'))
+
+                            if auto_execute and result.get('execution_result'):
+                                exec_result = result.get('execution_result')
+                                if exec_result.get('success'):
+                                    st.success(f"Trade executed: {exec_result.get('action')}")
+                                else:
+                                    st.error(f"Trade execution failed: {exec_result.get('error')}")
+                        else:
+                            st.error(f"AI Strategy failed for {symbol}: {result.get('error')}")
+
+                    if sym_idx < len(symbols_list) - 1:
+                        st.markdown("---")
     
     with tab3:
         st.markdown("### 🛡️ Stop Loss / Take Profit Monitoring")
@@ -1165,6 +1252,226 @@ def display_strategies():
                     'Confidence': signal.get('confidence'),
                     'Time': signal['created_at']
                 })
+
+
+def display_stock_advisor():
+    """Display Stock Advisor page"""
+    st.header("📊 Stock Advisor")
+    st.markdown("Get recommendations of stocks to buy based on technical analysis using yfinance data")
+    
+    # Initialize advisor
+    @st.cache_resource
+    def get_advisor():
+        return YFinanceStockAdvisor(use_ai=False)
+    
+    advisor = get_advisor()
+
+    # Get the current balance (cash) from get_trading_interface and display as metric
+    trading = get_trading_interface()
+    account_info = trading.get_account_info()
+    if account_info and account_info.get('success', True):
+        balance = account_info.get('cash', 0)
+        st.metric("Current Balance", f"${balance:,.2f}")
+    
+    # Tabs for different features
+    tab1, tab2 = st.tabs(["📋 Stock Screener", "🤖 AI Stock Picker"])
+
+    with tab1:
+        st.markdown("### Stock Screener")
+        st.markdown("Screen stocks by sector or custom list to find buy opportunities")
+        
+        screen_method = st.radio("Screening Method", ["By Sector", "Custom List"], horizontal=True)
+        
+        if screen_method == "By Sector":
+            sector = st.selectbox(
+                "Select Sector",
+                ['all', 'technology', 'healthcare', 'financial-services', 'consumer-cyclical', 'communication-services', 'industrials', 'consumer-defensive', 'energy', 'basic-materials', 'real-estate', 'utilities']
+
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                min_signals = st.slider("Minimum Buy Signals", 1, 6, 2)
+            with col2:
+                only_buy = st.checkbox("Only Show BUY Recommendations", value=True)
+            
+            if st.button("🔍 Screen Sector", type="primary"):
+                with st.spinner(f"Screening {sector} stocks..."):
+                    results = advisor.get_sector_recommendations(sector, min_signals)
+                    
+                    if only_buy:
+                        results = [r for r in results if r['recommendation'] == 'BUY']
+                    results = [r for r in results if r['buy_signal_count'] >= min_signals]
+                    
+                    if results:
+                        st.success(f"Found {len(results)} stocks matching criteria")
+                        
+                        # Create dataframe for display
+                        df_data = []
+                        for r in results:
+                            df_data.append({
+                                'Symbol': r['symbol'],
+                                'Name': r['name'][:30] + '...' if len(r['name']) > 30 else r['name'],
+                                'Price': f"${r['current_price']:.2f}",
+                                'Change': f"{r['change_pct']:+.2f}%",
+                                'Recommendation': r['recommendation'],
+                                'Confidence': f"{r['confidence']}%",
+                                'Risk': r['risk_level'].upper(),
+                                'Buy Signals': f"{r['buy_signal_count']}/6"
+                            })
+                        
+                        st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No stocks found matching the criteria")
+        
+        else:  # Custom List
+            symbols_input = st.text_area(
+                "Enter Stock Symbols (comma or space separated)",
+                placeholder="AAPL, MSFT, GOOGL, NVDA, META",
+                height=100
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                min_signals = st.slider("Minimum Buy Signals", 1, 6, 2, key="custom_min_signals")
+            with col2:
+                only_buy = st.checkbox("Only Show BUY Recommendations", value=True, key="custom_only_buy")
+            
+            if st.button("🔍 Screen Custom List", type="primary"):
+                if symbols_input:
+                    # Parse symbols
+                    symbols = [s.strip().upper() for s in symbols_input.replace(',', ' ').split() if s.strip()]
+                    
+                    if symbols:
+                        with st.spinner(f"Screening {len(symbols)} stocks..."):
+                            results = advisor.screen_stocks(
+                                symbols,
+                                min_buy_signals=min_signals,
+                                only_bullish=only_buy
+                            )
+                            
+                            if results:
+                                st.success(f"Found {len(results)} stocks matching criteria")
+                                
+                                df_data = []
+                                for r in results:
+                                    df_data.append({
+                                        'Symbol': r['symbol'],
+                                        'Name': r['name'][:30] + '...' if len(r['name']) > 30 else r['name'],
+                                        'Price': f"${r['current_price']:.2f}",
+                                        'Change': f"{r['change_pct']:+.2f}%",
+                                        'Recommendation': r['recommendation'],
+                                        'Confidence': f"{r['confidence']}%",
+                                        'Risk': r['risk_level'].upper(),
+                                        'Buy Signals': f"{r['buy_signal_count']}/6"
+                                    })
+                                
+                                st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No stocks found matching the criteria")
+                    else:
+                        st.warning("Please enter at least one symbol")
+                else:
+                    st.warning("Please enter stock symbols")
+
+    with tab2:
+        st.markdown("### AI Stock Picker")
+        st.markdown("Use AI to automatically select the best stocks to buy from the market")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            num_stocks = st.number_input("Number of stocks to pick", min_value=1, max_value=20, value=5, key="picker_num")
+        with col2:
+            min_signals_picker = st.slider("Minimum Buy Signals", 1, 6, 2, key="picker_min_signals")
+
+        picker_method = st.radio("Source", ["By Sector", "Custom List"], horizontal=True, key="picker_method")
+
+        if picker_method == "By Sector":
+            picker_sectors = st.multiselect(
+                "Select Sectors (empty = all)",
+                ['technology', 'healthcare', 'financial-services', 'consumer-cyclical',
+                 'communication-services', 'industrials', 'consumer-defensive',
+                 'energy', 'basic-materials', 'real-estate', 'utilities'],
+                key="picker_sectors"
+            )
+
+            if st.button("🤖 Pick Stocks", type="primary", key="picker_run_sector"):
+                with st.spinner(f"AI is selecting top {num_stocks} stocks..."):
+                    picker = StockPickerAgent()
+                    result = picker.pick_stocks(
+                        num_stocks=int(num_stocks),
+                        sectors=picker_sectors if picker_sectors else None,
+                        min_buy_signals=min_signals_picker,
+                    )
+                    _display_picker_results(result)
+        else:
+            picker_symbols_input = st.text_area(
+                "Enter Stock Symbols (comma or space separated)",
+                placeholder="AAPL, MSFT, GOOGL, NVDA, META, AMZN, TSLA",
+                height=100,
+                key="picker_symbols"
+            )
+
+            if st.button("🤖 Pick Stocks", type="primary", key="picker_run_custom"):
+                if picker_symbols_input:
+                    symbols = [s.strip().upper() for s in picker_symbols_input.replace(',', ' ').split() if s.strip()]
+                    if symbols:
+                        with st.spinner(f"AI is selecting top {num_stocks} stocks from {len(symbols)} candidates..."):
+                            picker = StockPickerAgent()
+                            result = picker.pick_stocks(
+                                num_stocks=int(num_stocks),
+                                custom_symbols=symbols,
+                                min_buy_signals=min_signals_picker,
+                            )
+                            _display_picker_results(result)
+                    else:
+                        st.warning("Please enter at least one symbol")
+                else:
+                    st.warning("Please enter stock symbols")
+
+
+def _display_picker_results(result):
+    """Display AI Stock Picker results."""
+    picks = result.get("picks", [])
+    if not picks:
+        st.info(f"No stocks selected. {result.get('reasoning', '')}")
+        return
+
+    st.success(
+        f"Selected {len(picks)} stocks from {result.get('candidates_total', '?')} candidates "
+        f"({result.get('screened_total', '?')} passed screening)"
+    )
+
+    # Display picks table
+    df_data = []
+    for p in picks:
+        df_data.append({
+            'Rank': p.get('rank', '-'),
+            'Symbol': p['symbol'],
+            'Name': p['name'][:30] + '...' if len(p['name']) > 30 else p['name'],
+            'Price': f"${p['current_price']:.2f}",
+            'Change': f"{p['change_pct']:+.2f}%",
+            'Score': p.get('score', '-'),
+            'Confidence': f"{p['confidence']}%",
+            'Risk': p['risk_level'].upper(),
+            'Buy Signals': f"{p['buy_signal_count']}/6",
+        })
+
+    st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
+
+    # Show reasoning
+    reasoning = result.get("reasoning", "")
+    if reasoning:
+        with st.expander("📝 AI Selection Rationale"):
+            st.markdown(reasoning)
+
+    # Show details per pick
+    for p in picks:
+        reasons = p.get("selection_reasons", [])
+        if reasons:
+            with st.expander(f"#{p.get('rank', '-')} {p['symbol']} - Selection Reasons"):
+                for r in reasons:
+                    st.markdown(f"- {r}")
 
 
 def display_config():
@@ -1337,7 +1644,7 @@ def main():
         
         page = st.radio(
             "Select Page",
-            ["💰 Account", "📊 Positions", "⚡ Trading", "📋 Orders", "🤖 AI Decision", "🎯 Strategies", "⚙️ Configuration"],
+            ["💰 Account", "📊 Positions", "⚡ Trading", "📋 Orders", "🤖 AI Decision", "🎯 Strategies", "📈 Stock Advisor", "⚙️ Configuration"],
             key="main_nav"
         )
         
@@ -1418,6 +1725,8 @@ def main():
         display_ai_decision()
     elif page == "🎯 Strategies":
         display_strategies()
+    elif page == "📈 Stock Advisor":
+        display_stock_advisor()
     elif page == "⚙️ Configuration":
         display_config()
 

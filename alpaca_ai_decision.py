@@ -13,11 +13,15 @@ import yfinance as yf
 import pandas as pd
 import ta
 
+from ai_agents import StockAnalysisAgents
+from databricks_client import DatabricksClient
+from stock_data import StockDataFetcher
+
 
 class AlpacaAIDecision:
     """Alpaca AI Decision Engine using DeepSeek LLM"""
     
-    def __init__(self, api_key: str, base_url: str = "https://api.deepseek.com/v1"):
+    def __init__(self, api_key: str = "", base_url: str = "https://api.deepseek.com/v1"):
         """
         Initialize AI Decision Engine
         
@@ -31,6 +35,8 @@ class AlpacaAIDecision:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
+        self.agents = StockAnalysisAgents()
+        self.client = DatabricksClient()
         self.logger = logging.getLogger(__name__)
     
     def get_market_data(self, symbol: str) -> Optional[Dict]:
@@ -131,9 +137,13 @@ class AlpacaAIDecision:
         prompt = self._build_prompt(market_data, account_info, has_position, 
                                    position_cost, position_quantity)
         
-        # Call DeepSeek API
         try:
-            response = self._call_deepseek(prompt)
+            messages = [
+                {"role": "system", "content": "You are an experienced US stock quantitative trading expert with 15 years of experience."},
+                {"role": "user", "content": prompt}
+            ]
+            response = self.client.call_api(messages)
+            print(response)
             decision = self._parse_decision(response)
             
             return {
@@ -199,6 +209,105 @@ class AlpacaAIDecision:
                 )
             }
     
+    def get_stock_data(symbol, period):
+        """获取股票数据（带缓存）"""
+        fetcher = StockDataFetcher()
+        stock_info = fetcher.get_stock_info(symbol)
+        stock_data = fetcher.get_stock_data(symbol, period)
+
+        if isinstance(stock_data, dict) and "error" in stock_data:
+            return stock_info, None, None
+
+        stock_data_with_indicators = fetcher.calculate_technical_indicators(stock_data)
+        indicators = fetcher.get_latest_indicators(stock_data_with_indicators)
+
+        return stock_info, stock_data_with_indicators, indicators
+    
+    def analyze_and_decide_databricks_client(self, snapshot) -> Dict:
+        """
+        Decision based on IndicatorSnapshot with DatabricksClient
+        
+        Args:
+            snapshot: IndicatorSnapshot object
+            
+        Returns:
+            Decision dictionary with LLM proposal
+        """
+        # Check data integrity
+        if not snapshot.has_valid_price:
+            return {
+                'success': False,
+                'error': 'Invalid price data',
+                'proposal': None
+            }
+        
+        # Call LLM
+        try:
+            period = "1y"
+            fetcher = StockDataFetcher()
+            stock_info, stock_data, indicators = self.get_stock_data(snapshot.symbol, period)
+            financial_data = fetcher.get_financial_data(snapshot.symbol)
+
+            enabled_analysts_config = {
+                'technical': True,
+                'fundamental': True,
+                'fund_flow': False,
+                'risk': False,
+                'sentiment': False,
+                'news': False
+            }
+            quarterly_data = None
+            enable_fundamental = enabled_analysts_config.get('fundamental', True)
+            if enable_fundamental:
+                try:
+                    from quarterly_report_data import QuarterlyReportDataFetcher
+                    quarterly_fetcher = QuarterlyReportDataFetcher()
+                    quarterly_data = quarterly_fetcher.get_quarterly_reports(snapshot.symbol)
+                except:
+                    pass
+            
+            fund_flow_data = None
+            sentiment_data = None
+            news_data = None
+            risk_data = None
+
+            agents_results = self.agents.run_multi_agent_analysis(
+                stock_info, stock_data, indicators, financial_data,
+                fund_flow_data, sentiment_data, news_data, quarterly_data, risk_data,
+                enabled_analysts=enabled_analysts_config
+            )
+
+            discussion_result = self.agents.conduct_team_discussion(agents_results, stock_info, snapshot)
+            final_decision = self.agents.make_final_decision(discussion_result, stock_info, indicators, snapshot)
+
+            # response = self._call_deepseek(prompt)
+            proposal = self._parse_proposal_v2(final_decision, snapshot)
+            
+            return {
+                'success': True,
+                'proposal': proposal,
+                'raw_output': final_decision
+            }
+        except Exception as e:
+            self.logger.error(f"AI decision for databricks client failed: {e}")
+            # Return conservative decision
+            from hard_decision_firewall import LLMProposal
+            return {
+                'success': False,
+                'error': str(e),
+                'proposal': LLMProposal(
+                    symbol=snapshot.symbol,
+                    proposed_action="HOLD",
+                    confidence=0,
+                    evidence={},
+                    params={},
+                    risk_level="high",
+                    warnings=[f"AI decision failed: {str(e)}"],
+                    counter_evidence=[],
+                    notes="Data error or LLM call failed"
+                )
+            }
+
     def _build_prompt(self, market_data: Dict, account_info: Dict,
                      has_position: bool, position_cost: float, 
                      position_quantity: int) -> str:
